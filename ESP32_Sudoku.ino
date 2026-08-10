@@ -729,7 +729,7 @@ static void sprSettingRow(TFT_eSprite &spr, const uint8_t *&sf, int row, int sel
     case SET_THEME:    sprChipRow(spr, sf, y, "Theme",       setChipVal(row), false, s, 0); break;
     case SET_ACCENT:   sprChipRow(spr, sf, y, "Accent",      setChipVal(row), false, s, 0); break;
     case SET_FONT:     sprChipRow(spr, sf, y, "Font Color",  setChipVal(row), false, s, theme.fontColPreview()); break;
-    case SET_GRID:     sprChipRow(spr, sf, y, "Grid Look",   setChipVal(row), false, s, 0); break;
+    case SET_GRID:     sprInfoRow(spr, sf, y, "Grid Look",   setChipVal(row), s); break;
     case SET_PEERS:    sprChipRow(spr, sf, y, "Highlight Peers", setChipVal(row), false, s, 0); break;
     case SET_SAME:     sprChipRow(spr, sf, y, "Highlight Same",  setChipVal(row), false, s, 0); break;
     case SET_AUTONOTE: sprChipRow(spr, sf, y, "Auto-Erase Notes", setChipVal(row), false, s, 0); break;
@@ -795,6 +795,132 @@ static void aboutScreen() {
 
   statusLine("Tap to go back.", COL_DIM);
   uint16_t x, ty; waitTap(x, ty);
+}
+
+// ── Grid Look picker — a full-screen gallery of palette swatches ────────────
+// Resolve a palette by cycle index (the last index is the theme-derived one).
+static BoardPal palByIndex(uint8_t i) {
+  if (i >= BOARD_PAL_THEME) return boardPalFromTheme(theme.bg(), theme.fg(), theme.dim(), theme.dark());
+  return BOARD_PALS[i % BOARD_PAL_FIXED];
+}
+// One swatch: a mini 3x3 board in the palette (given, entry, conflict digits +
+// selection/peer/same tints) with its name below and a ring when it is current.
+static void drawSwatchSpr(TFT_eSprite &g, const uint8_t *&tk, int sx, int sy,
+                          int slotW, int slotH, uint8_t idx, bool selected,
+                          int labelH, uint8_t labelF) {
+  BoardPal bp = palByIndex(idx);
+  const int pad = 5;
+  int avail = min(slotW - 2 * pad, slotH - labelH - 2 * pad);
+  if (avail < 12) avail = 12;
+  int cell = avail / 3, S = cell * 3;
+  int ssx = sx + (slotW - S) / 2, ssy = sy + pad;
+
+  g.fillRect(ssx, ssy, S, S, bp.paper);
+  g.fillRect(ssx + cell,     ssy + cell,     cell, cell, bp.sel);      // centre = selected
+  g.fillRect(ssx + 2 * cell, ssy,            cell, cell, bp.same);     // top-right = same digit
+  g.fillRect(ssx,            ssy + 2 * cell, cell, cell, bp.peer);     // bottom-left = peer
+  g.fillRect(ssx + 2 * cell, ssy + 2 * cell, cell, cell, bp.badFill);  // bottom-right = conflict
+  for (int k = 1; k < 3; k++) {
+    g.drawFastVLine(ssx + k * cell, ssy, S, bp.lineThin);
+    g.drawFastHLine(ssx, ssy + k * cell, S, bp.lineThin);
+  }
+  g.drawRect(ssx, ssy, S, S, bp.lineThick);
+  g.drawRect(ssx - 1, ssy - 1, S + 2, S + 2, bp.lineThick);
+
+  uint8_t df = (cell >= 18) ? 2 : 1;
+  g.setTextDatum(MC_DATUM);
+  g.setTextColor(bp.givenText); sprStr(g, tk, "5", ssx + cell / 2,           ssy + cell / 2,           df);
+  g.setTextColor(bp.entryText); sprStr(g, tk, "3", ssx + cell + cell / 2,     ssy + cell + cell / 2,     df);
+  g.setTextColor(bp.badText);   sprStr(g, tk, "7", ssx + 2 * cell + cell / 2, ssy + 2 * cell + cell / 2, df);
+
+  g.setTextColor(selected ? theme.sel() : COL_FG, COL_BG);
+  sprStr(g, tk, BOARD_PAL_NAMES[idx], sx + slotW / 2, ssy + S + labelH / 2 + 1, labelF);
+  g.setTextDatum(TL_DATUM);
+  if (selected) {
+    g.drawRoundRect(sx + 2, sy + 1, slotW - 4, slotH - 2, 6, theme.sel());
+    g.drawRoundRect(sx + 3, sy + 2, slotW - 6, slotH - 4, 6, theme.sel());
+  }
+}
+static void gridPickerScreen() {
+#ifdef MARAUDER_V8
+  const int COLS = 2, SLOTH = 94, LABELH = 13; const uint8_t LABELF = 1;
+#else
+  const int COLS = 3, SLOTH = 86, LABELH = 16; const uint8_t LABELF = 2;
+#endif
+  const int NPAL  = BOARD_PAL_COUNT;
+  const int slotW = SCRW / COLS;
+  const int nrows = (NPAL + COLS - 1) / COLS;
+  const int CY = CONTENTY, CH = SCRH - CONTENTY;
+  const int total = nrows * SLOTH;
+
+  tft->fillScreen(COL_BG);
+  drawHeader("Grid Look", true);
+
+  TFT_eSprite spr(tft);
+  spr.setColorDepth(16);
+  if (!spr.createSprite(SCRW, CH)) {
+    msgScreen("Grid Look", "Out of memory", "The palette gallery needs PSRAM.", TFT_RED);
+    return;
+  }
+  const uint8_t *tk = nullptr;
+  float scroll = 0, fling = 0;
+
+  auto render = [&]() {
+    float maxS = total > CH ? total - CH : 0;
+    if (scroll < 0) scroll = 0;
+    if (scroll > maxS) scroll = maxS;
+    tk = nullptr;
+    spr.fillSprite(COL_BG);
+    for (int i = 0; i < NPAL; i++) {
+      int y = (i / COLS) * SLOTH - (int)scroll, x = (i % COLS) * slotW;
+      if (y + SLOTH < 0 || y > CH) continue;
+      drawSwatchSpr(spr, tk, x, y, slotW, SLOTH, (uint8_t)i, i == theme.board_pal, LABELH, LABELF);
+    }
+    sprScrollBar(spr, CH, total, scroll);
+    spr.pushSprite(0, CY);
+  };
+  render();
+
+  bool wasDown = false, moved = false;
+  uint16_t pX = 0, pY = 0, lastY = 0;
+  float pScroll = 0, vel = 0;
+  uint32_t lastT = 0;
+  for (;;) {
+    touch->run();
+    bool down = touch->isPressed();
+    uint16_t tx = touch->x(), ty = touch->y();
+    uint32_t now = millis();
+    if (down && !wasDown) {
+      pX = tx; pY = ty; pScroll = scroll; moved = false; fling = 0; lastY = ty; lastT = now; vel = 0;
+    } else if (down && wasDown) {
+      int dy = (int)pY - (int)ty;
+      if (abs(dy) > 6) moved = true;
+      scroll = pScroll + dy;
+      uint32_t dt = now - lastT;
+      if (dt > 0) { vel = (float)((int)lastY - (int)ty) / (float)dt * 1000.0f; lastY = ty; lastT = now; }
+      render();
+    } else if (!down && wasDown) {
+      if (!moved) {
+        if (backTapped(pX, pY)) { spr.deleteSprite(); return; }
+        if ((int)pY >= CY) {
+          int r = ((int)pY - CY + (int)scroll) / SLOTH, c = (int)pX / slotW;
+          int idx = r * COLS + c;
+          if (c >= 0 && c < COLS && idx >= 0 && idx < NPAL && idx != theme.board_pal) {
+            theme.board_pal = (uint8_t)idx; theme.save();
+            render();
+          }
+        }
+      } else {
+        fling = vel;
+      }
+    } else if (fabs(fling) > 25) {
+      scroll += fling * 0.016f; fling *= 0.95f; render();
+    } else {
+      fling = 0;
+    }
+    wasDown = down;
+    delay(10);
+  }
 }
 
 static void settingsFlow() {
@@ -874,7 +1000,7 @@ static void settingsFlow() {
         case SET_THEME:  if (h >= 0) { theme.cycleTheme(h); theme.save(); applyThemeToViewManager(); full(); } break;
         case SET_ACCENT: if (h >= 0) { theme.cycleAccent(h); theme.save(); applyThemeToViewManager(); render(); } break;
         case SET_FONT:   if (h >= 0) { theme.cycleFontCol(h); theme.save(); applyThemeToViewManager(); recolor(); } break;
-        case SET_GRID:   if (h >= 0) { theme.cycleBoardPal(h); theme.save(); render(); } break;
+        case SET_GRID:   gridPickerScreen(); full(); break;
         case SET_PEERS:  if (h >= 0) { g_hlPeers   = !g_hlPeers;   cfgSave(); render(); } break;
         case SET_SAME:   if (h >= 0) { g_hlSame    = !g_hlSame;    cfgSave(); render(); } break;
         case SET_AUTONOTE:if (h >= 0){ g_autoNotes = !g_autoNotes; cfgSave(); render(); } break;
