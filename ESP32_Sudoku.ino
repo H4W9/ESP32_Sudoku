@@ -95,6 +95,7 @@ static bool    g_hlPeers    = true;    // shade the selection's row/col/box
 static bool    g_hlSame     = true;    // shade cells holding the same digit
 static bool    g_autoNotes  = true;    // placing a digit erases that pencil mark from peers
 static bool    g_showTimer  = true;
+static bool    g_hlMistakes = true;    // flag wrong entries in red (and count them)
 static uint8_t g_mistakeLim = 0;       // 0 = off, else 3 or 5 strikes then game over
 
 // ── Statistics (persisted /sudoku_stats.json) ───────────────────────────────
@@ -589,6 +590,7 @@ static void cfgLoad() {
   if (!d["same"].isNull())    g_hlSame    = d["same"].as<bool>();
   if (!d["autonote"].isNull())g_autoNotes = d["autonote"].as<bool>();
   if (!d["timer"].isNull())   g_showTimer = d["timer"].as<bool>();
+  if (!d["mistakes"].isNull())g_hlMistakes= d["mistakes"].as<bool>();
   if (!d["mlimit"].isNull())  g_mistakeLim= d["mlimit"].as<uint8_t>();
   if (g_mistakeLim != 0 && g_mistakeLim != 3 && g_mistakeLim != 5) g_mistakeLim = 0;
 }
@@ -598,6 +600,7 @@ static void cfgSave() {
   d["same"]     = g_hlSame;
   d["autonote"] = g_autoNotes;
   d["timer"]    = g_showTimer;
+  d["mistakes"] = g_hlMistakes;
   d["mlimit"]   = g_mistakeLim;
   File w = SPIFFS.open("/sudoku_cfg.json", FILE_WRITE);
   if (!w) return;
@@ -695,7 +698,7 @@ static void gameDeleteSave() {
 // ════════════════════════════════════════════════════════════════════════════
 enum {
   SET_THEME = 0, SET_ACCENT, SET_FONT, SET_GRID,
-  SET_PEERS, SET_SAME, SET_AUTONOTE, SET_TIMER, SET_MLIMIT,
+  SET_PEERS, SET_SAME, SET_AUTONOTE, SET_TIMER, SET_MISTAKES, SET_MLIMIT,
   SET_BRIGHT, SET_LED, SET_ABOUT,
 #ifndef HAS_CAP_TOUCH
   SET_CAL,
@@ -717,6 +720,7 @@ static String setChipVal(int row) {
     case SET_SAME:     return onOff(g_hlSame);
     case SET_AUTONOTE: return onOff(g_autoNotes);
     case SET_TIMER:    return onOff(g_showTimer);
+    case SET_MISTAKES: return onOff(g_hlMistakes);
     case SET_MLIMIT:   return mlimitVal();
     case SET_BRIGHT:   return String(theme.bright + 1) + "/20";
     case SET_LED:      return String(theme.led_bright) + "/20";
@@ -734,6 +738,7 @@ static void sprSettingRow(TFT_eSprite &spr, const uint8_t *&sf, int row, int sel
     case SET_SAME:     sprChipRow(spr, sf, y, "Highlight Same",  setChipVal(row), false, s, 0); break;
     case SET_AUTONOTE: sprChipRow(spr, sf, y, "Auto-Erase Notes", setChipVal(row), false, s, 0); break;
     case SET_TIMER:    sprChipRow(spr, sf, y, "Show Timer",   setChipVal(row), false, s, 0); break;
+    case SET_MISTAKES: sprChipRow(spr, sf, y, "Show Mistakes", setChipVal(row), false, s, 0); break;
     case SET_MLIMIT:   sprChipRow(spr, sf, y, "Mistake Limit", setChipVal(row), true, s, 0); break;
     case SET_BRIGHT:   sprChipRow(spr, sf, y, "Brightness",   setChipVal(row), true,  s, 0); break;
     case SET_LED:      sprChipRow(spr, sf, y, "LED",          setChipVal(row), true,  s, 0); break;
@@ -1005,6 +1010,7 @@ static void settingsFlow() {
         case SET_SAME:   if (h >= 0) { g_hlSame    = !g_hlSame;    cfgSave(); render(); } break;
         case SET_AUTONOTE:if (h >= 0){ g_autoNotes = !g_autoNotes; cfgSave(); render(); } break;
         case SET_TIMER:  if (h >= 0) { g_showTimer = !g_showTimer; cfgSave(); render(); } break;
+        case SET_MISTAKES:if (h >= 0){ g_hlMistakes = !g_hlMistakes; cfgSave(); render(); } break;
         case SET_MLIMIT:
           if (h == 1)      g_mistakeLim = (g_mistakeLim == 0) ? 3 : (g_mistakeLim == 3) ? 5 : 0;
           else if (h == 0) g_mistakeLim = (g_mistakeLim == 0) ? 5 : (g_mistakeLim == 5) ? 3 : 0;
@@ -1131,8 +1137,10 @@ static bool isPeer(int a, int b) {
   return (a / 9 == b / 9) || (a % 9 == b % 9) ||
          ((a / 9) / 3 == (b / 9) / 3 && (a % 9) / 3 == (b % 9) / 3);
 }
-// A cell shows red when its value disagrees with the unique solution.
+// A cell shows red when its value disagrees with the unique solution — but only
+// when the Show Mistakes hint is on; off, wrong entries look like any other.
 static bool cellWrong(int i) {
+  if (!g_hlMistakes) return false;
   uint8_t v = g_sud.value(i);
   return v != 0 && !g_sud.isGiven(i) && v != g_sud.solution(i);
 }
@@ -1160,10 +1168,10 @@ static void gDrawInto(TFT_eSprite &cs) {
   }
   cs.setTextDatum(MR_DATUM);
   String rstat;
-  if (g_mistakeLim) rstat = String("X ") + g_mistakes + "/" + g_mistakeLim;
-  else if (g_mistakes) rstat = String("X ") + g_mistakes;
+  if (g_hlMistakes && g_mistakeLim) rstat = String("X ") + g_mistakes + "/" + g_mistakeLim;
+  else if (g_hlMistakes && g_mistakes) rstat = String("X ") + g_mistakes;
   else rstat = String(g_sud.filledCount()) + "/81";
-  cs.setTextColor(g_mistakeLim && g_mistakes >= g_mistakeLim ? bp.badText : COL_DIM, COL_BG);
+  cs.setTextColor(g_hlMistakes && g_mistakeLim && g_mistakes >= g_mistakeLim ? bp.badText : COL_DIM, COL_BG);
   sprStr(cs, g_csFont, rstat, SCRW - 10, iy + IH / 2, 2);
   cs.setTextDatum(TL_DATUM);
 
@@ -1322,7 +1330,7 @@ static bool enterDigit(uint8_t d) {
   if (g_sud.value(g_sel) == d) return g_sud.clearCell(g_sel);   // tap-again clears
   g_hintCell[g_sel] = false;
   bool changed = g_sud.setValue(g_sel, d, g_autoNotes);
-  if (changed && d != g_sud.solution(g_sel)) g_mistakes++;
+  if (changed && g_hlMistakes && d != g_sud.solution(g_sel)) g_mistakes++;
   return changed;
 }
 
@@ -1388,12 +1396,12 @@ static void gameScreen() {
           ledBlinkOk(400);
           msgScreen("Solved!", fmtTime(elapsedSec()),
                     String(PUZ_DIFF_NAME[g_sud.difficulty()]) + " completed" +
-                    (g_hintsUsed ? String(" — ") + g_hintsUsed + " hint" + (g_hintsUsed > 1 ? "s" : "") : String("")),
+                    (g_hintsUsed ? String(" - ") + g_hintsUsed + " hint" + (g_hintsUsed > 1 ? "s" : "") : String("")),
                     COL_OK);
           return;
         }
         // ── mistake limit reached? ──
-        if (g_mistakeLim && g_mistakes >= g_mistakeLim) {
+        if (g_hlMistakes && g_mistakeLim && g_mistakes >= g_mistakeLim) {
           g_elapsedMs += (millis() - g_startMs); g_running = false;
           g_played[g_sud.difficulty()]++; statsSave();
           gameDeleteSave();
@@ -1402,6 +1410,16 @@ static void gameScreen() {
           msgScreen("Game Over", "Too many mistakes",
                     String("You reached ") + g_mistakeLim + " mistakes.", TFT_RED);
           return;
+        }
+        // ── board full but not correct? (the only end-signal when hints are off) ──
+        if (g_sud.isComplete()) {
+          g_elapsedMs += (millis() - g_startMs); g_running = false;
+          msgScreen("Almost!", "Grid full, not solved",
+                    g_hlMistakes ? "Fix the cells marked in red."
+                                 : "Show Mistakes is off - recheck your entries.", COL_FG);
+          tft->fillScreen(COL_BG); drawHeader("Sudoku", true); gRender();
+          g_startMs = millis(); g_running = true;
+          wasDown = true; moved = true;   // swallow the dismiss tap's release
         }
       }
     }
@@ -1482,7 +1500,7 @@ static void openMenuItem(int i) {
       if (g_gameActive) { gameScreen(); break; }
       if (gameLoad()) { gameScreen(); }
       else msgScreen("Continue", "No saved game",
-                     "Start a new game — it saves automatically when you leave the board.", COL_DIM);
+                     "Start a new game - it saves automatically when you leave the board.", COL_DIM);
       break;
     case 2: statsScreen();  break;
     case 3: settingsFlow(); break;
