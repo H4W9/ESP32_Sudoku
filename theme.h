@@ -139,7 +139,7 @@ struct Theme {
   BoardPal board() const {
     return board_pal == BOARD_PAL_THEME
              ? boardPalFromTheme(bg(), fg(), dim(), dark())
-             : BOARD_CLASSIC;
+             : BOARD_PALS[board_pal % BOARD_PAL_FIXED];
   }
   const char *boardPalName() const { return BOARD_PAL_NAMES[board_pal % BOARD_PAL_COUNT]; }
   void cycleBoardPal(bool fwd) {
