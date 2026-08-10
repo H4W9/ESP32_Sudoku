@@ -1253,6 +1253,31 @@ static void gRender() {
   g_cs->pushSprite(0, HDRH);
 }
 
+// Momentary "key pressed" feedback: paint the tapped key light-gray straight to
+// the panel for a beat, matching the shell keyboard. The next gRender() repaints
+// it in its normal colour, so the highlight reads as a quick flash.
+static const uint16_t KEY_FLASH = 0xBDF7;   // light gray (same as the shell keyboard)
+static void flashKey(int bx, int by, int bw, int bh, int radius,
+                     const String &label, uint8_t font, bool dim) {
+  tft->fillRoundRect(bx, by, bw, bh, radius, KEY_FLASH);
+  tft->drawRoundRect(bx, by, bw, bh, radius, theme.neon(0, COL_DIM));
+  tft->setTextColor(dim ? COL_DIM : contrastOn(KEY_FLASH), KEY_FLASH);
+  tft->setTextDatum(MC_DATUM);
+  drawStr(label, bx + bw / 2, by + bh / 2 + 1, font);
+  tft->setTextDatum(TL_DATUM);
+  delay(70);
+}
+static void flashNumKey(int d) {
+  int nw = numKeyW();
+  flashKey(numKeyX(d) + 1, NUMY, nw - 2, NUMH, 5,
+           String((char)('0' + d)), NUMFONT, g_sud.digitExhausted((uint8_t)d));
+}
+static void flashActKey(int i) {
+  int aw = actKeyW();
+  flashKey(actKeyX(i) + 2, ACTY, aw - 4, ACTH, 6,
+           ACT_LABEL[i], 2, (i == 0 && !g_sud.canUndo()));
+}
+
 // Screen point -> cell index, or -1.
 static int cellAt(int x, int y) {
   if (x < GX || x >= GX + GRIDSZ || y < GY || y >= GY + GRIDSZ) return -1;
@@ -1325,13 +1350,14 @@ static void gameScreen() {
         gSpriteEnd();
         return;
       }
-      bool changed = false;
+      bool changed = false, flashed = false;
       int cell = cellAt(pX, pY);
       int num  = numAt(pX, pY);
       int act  = actAt(pX, pY);
       if (cell >= 0) { if (g_sel != cell) { g_sel = cell; changed = true; } }
-      else if (num >= 1) { changed = enterDigit((uint8_t)num); }
+      else if (num >= 1) { flashNumKey(num); flashed = true; changed = enterDigit((uint8_t)num); }
       else if (act >= 0) {
+        flashActKey(act); flashed = true;
         switch (act) {
           case 0: changed = g_sud.undo(); break;
           case 1: if (g_sel >= 0) { g_hintCell[g_sel] = false; changed = g_sud.clearCell(g_sel); } break;
@@ -1342,6 +1368,7 @@ static void gameScreen() {
                   } break;
         }
       }
+      if (!changed && flashed) gRender();   // no state change: repaint to clear the flash
       if (changed) {
         gRender();
         // ── win? ──
