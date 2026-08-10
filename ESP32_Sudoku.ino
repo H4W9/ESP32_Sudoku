@@ -1242,6 +1242,13 @@ static void gDrawInto(TFT_eSprite &cs) {
     cs.setTextColor(done ? COL_DIM : COL_FG, COL_ACCENT);
     cs.setTextDatum(MC_DATUM);
     sprStr(cs, g_csFont, String((char)('0' + d)), bx + nw / 2, ny + NUMH / 2 + 1, NUMFONT);
+    // Tiny remaining-count (9 minus placed) in the key's top-left corner.
+    int rem = 9 - g_sud.countOf((uint8_t)d);
+    if (rem > 0) {
+      cs.setTextColor(COL_DIM, COL_ACCENT);
+      cs.setTextDatum(TL_DATUM);
+      sprStr(cs, g_csFont, String(rem), bx + 4, ny + 2, 1);
+    }
   }
   cs.setTextDatum(TL_DATUM);
 }
