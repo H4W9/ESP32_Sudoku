@@ -1201,28 +1201,32 @@ static void gDrawInto(TFT_eSprite &cs) {
       cs.drawFastHLine(GX, gy + k * GCELL - 1, GRIDSZ, col);
     }
   }
-  // ── digits + notes ──
+  // ── digits, then notes: two passes so the VLW font loader (vlw.h) never
+  //    thrashes between CELLFONT and NOTEFONT mid-grid — each font loads once
+  //    instead of potentially once per cell. ──
+  cs.setTextDatum(MC_DATUM);
   for (int i = 0; i < 81; i++) {
+    uint8_t v = g_sud.value(i);
+    if (!v) continue;
     int r = i / 9, c = i % 9;
     int x = GX + c * GCELL, y = gy + r * GCELL;
-    uint8_t v = g_sud.value(i);
-    if (v) {
-      uint16_t tc = cellWrong(i) ? bp.badText
-                  : g_sud.isGiven(i) ? bp.givenText
-                  : g_hintCell[i] ? bp.hintText : bp.entryText;
-      cs.setTextColor(tc);
-      cs.setTextDatum(MC_DATUM);
-      sprStr(cs, g_csFont, String((char)('0' + v)), x + GCELL / 2, y + GCELL / 2 + 1, CELLFONT);
-    } else if (g_sud.notes(i)) {
-      cs.setTextColor(bp.noteText);
-      cs.setTextDatum(MC_DATUM);
-      int sub = GCELL / 3;
-      for (uint8_t d = 1; d <= 9; d++) {
-        if (!g_sud.hasNote(i, d)) continue;
-        int nx = x + ((d - 1) % 3) * sub + sub / 2;
-        int ny = y + ((d - 1) / 3) * sub + sub / 2;
-        sprStr(cs, g_csFont, String((char)('0' + d)), nx, ny, NOTEFONT);
-      }
+    uint16_t tc = cellWrong(i) ? bp.badText
+                : g_sud.isGiven(i) ? bp.givenText
+                : g_hintCell[i] ? bp.hintText : bp.entryText;
+    cs.setTextColor(tc);
+    sprStr(cs, g_csFont, String((char)('0' + v)), x + GCELL / 2, y + GCELL / 2 + 1, CELLFONT);
+  }
+  cs.setTextColor(bp.noteText);
+  for (int i = 0; i < 81; i++) {
+    if (g_sud.value(i) || !g_sud.notes(i)) continue;
+    int r = i / 9, c = i % 9;
+    int x = GX + c * GCELL, y = gy + r * GCELL;
+    int sub = GCELL / 3;
+    for (uint8_t d = 1; d <= 9; d++) {
+      if (!g_sud.hasNote(i, d)) continue;
+      int nx = x + ((d - 1) % 3) * sub + sub / 2;
+      int ny = y + ((d - 1) / 3) * sub + sub / 2;
+      sprStr(cs, g_csFont, String((char)('0' + d)), nx, ny, NOTEFONT);
     }
   }
   cs.setTextDatum(TL_DATUM);
@@ -1230,7 +1234,7 @@ static void gDrawInto(TFT_eSprite &cs) {
   // ── action row ──
   int aw = actKeyW(), ay = SY(ACTY);
   for (int i = 0; i < 4; i++) {
-    int bx = actKeyX(i) - GX + GX;   // = actKeyX(i)
+    int bx = actKeyX(i);
     bool on = (i == 2 && g_notesMode);
     uint16_t bg = on ? theme.sel() : COL_ACCENT;
     cs.fillRoundRect(bx + 2, ay, aw - 4, ACTH, 6, bg);
@@ -1240,25 +1244,29 @@ static void gDrawInto(TFT_eSprite &cs) {
     cs.setTextDatum(MC_DATUM);
     sprStr(cs, g_csFont, ACT_LABEL[i], bx + aw / 2, ay + ACTH / 2, 2);
   }
-  // ── number row ──
+  cs.setTextDatum(TL_DATUM);
+
+  // ── number row: all 9 digits, then all 9 remaining-count badges — this
+  //    loop used to switch fonts up to 18x per render (guaranteed, on every
+  //    tap and every 1Hz timer tick), which is why the number row is where
+  //    the biggest chunk of the lag was hiding. ──
   int nw = numKeyW(), ny = SY(NUMY);
+  cs.setTextDatum(MC_DATUM);
   for (int d = 1; d <= 9; d++) {
     int bx = numKeyX(d);
     bool done = g_sud.digitExhausted(d);
     cs.fillRoundRect(bx + 1, ny, nw - 2, NUMH, 5, COL_ACCENT);
     cs.drawRoundRect(bx + 1, ny, nw - 2, NUMH, 5, theme.neon(d, COL_DIM));
     cs.setTextColor(done ? COL_DIM : COL_FG, COL_ACCENT);
-    cs.setTextDatum(MC_DATUM);
     sprStr(cs, g_csFont, String((char)('0' + d)), bx + nw / 2, ny + NUMH / 2 + 1, NUMFONT);
-    // Tiny remaining-count (9 minus placed) in the key's top-left corner.
-    int rem = 9 - g_sud.countOf((uint8_t)d);
-    if (rem > 0) {
-      cs.setTextColor(COL_DIM, COL_ACCENT);
-      cs.setTextDatum(TL_DATUM);
-      sprStr(cs, g_csFont, String(rem), bx + 4, ny + 2, 1);
-    }
   }
   cs.setTextDatum(TL_DATUM);
+  cs.setTextColor(COL_DIM, COL_ACCENT);
+  for (int d = 1; d <= 9; d++) {
+    int rem = 9 - g_sud.countOf((uint8_t)d);
+    if (rem <= 0) continue;
+    sprStr(cs, g_csFont, String(rem), numKeyX(d) + 4, ny + 2, 1);
+  }
 }
 
 static void gRender() {
@@ -1268,29 +1276,213 @@ static void gRender() {
   g_cs->pushSprite(0, HDRH);
 }
 
-// Momentary "key pressed" feedback: paint the tapped key light-gray straight to
-// the panel for a beat, matching the shell keyboard. The next gRender() repaints
-// it in its normal colour, so the highlight reads as a quick flash.
+// ════════════════════════════════════════════════════════════════════════════
+//  Partial redraw — each pair below draws exactly one widget into the
+//  persistent content sprite (g_cs) and blits just that widget's rectangle to
+//  the panel via TFT_eSprite::pushSprite(tx,ty,sx,sy,sw,sh) (a windowed push,
+//  not a full-sprite one). A tap now repaints a handful of pixels instead of
+//  the whole board.
+// ════════════════════════════════════════════════════════════════════════════
+static void drawCellFull(TFT_eSprite &cs, int i) {
+  BoardPal bp = theme.board();
+  int r = i / 9, c = i % 9;
+  int x = GX + c * GCELL, y = SY(GY) + r * GCELL;
+  uint16_t fill;
+  if (cellWrong(i))                                             fill = bp.badFill;
+  else if (i == g_sel)                                          fill = bp.sel;
+  else if (g_hlSame && g_sel >= 0 && g_sud.value(i) != 0 &&
+           g_sud.value(i) == g_sud.value(g_sel))                fill = bp.same;
+  else if (g_hlPeers && g_sel >= 0 && isPeer(i, g_sel))         fill = bp.peer;
+  else                                                          fill = g_sud.isGiven(i) ? bp.givenCell : bp.paper;
+  cs.fillRect(x, y, GCELL, GCELL, fill);
+
+  // Redraw this cell's own 4 border edges (thick at box boundaries, exactly
+  // as the full-grid line pass draws them) so a lone-cell repaint still lines
+  // up with its neighbours.
+  bool thickL = (c % 3 == 0), thickR = ((c + 1) % 3 == 0);
+  bool thickT = (r % 3 == 0), thickB = ((r + 1) % 3 == 0);
+  cs.drawFastVLine(x, y, GCELL, thickL ? bp.lineThick : bp.lineThin);
+  if (thickL) cs.drawFastVLine(x - 1, y, GCELL, bp.lineThick);
+  cs.drawFastVLine(x + GCELL, y, GCELL, thickR ? bp.lineThick : bp.lineThin);
+  if (thickR) cs.drawFastVLine(x + GCELL - 1, y, GCELL, bp.lineThick);
+  cs.drawFastHLine(x, y, GCELL, thickT ? bp.lineThick : bp.lineThin);
+  if (thickT) cs.drawFastHLine(x, y - 1, GCELL, bp.lineThick);
+  cs.drawFastHLine(x, y + GCELL, GCELL, thickB ? bp.lineThick : bp.lineThin);
+  if (thickB) cs.drawFastHLine(x, y + GCELL - 1, GCELL, bp.lineThick);
+
+  uint8_t v = g_sud.value(i);
+  cs.setTextDatum(MC_DATUM);
+  if (v) {
+    uint16_t tc = cellWrong(i) ? bp.badText
+                : g_sud.isGiven(i) ? bp.givenText
+                : g_hintCell[i] ? bp.hintText : bp.entryText;
+    cs.setTextColor(tc);
+    sprStr(cs, g_csFont, String((char)('0' + v)), x + GCELL / 2, y + GCELL / 2 + 1, CELLFONT);
+  } else if (g_sud.notes(i)) {
+    cs.setTextColor(bp.noteText);
+    int sub = GCELL / 3;
+    for (uint8_t d = 1; d <= 9; d++) {
+      if (!g_sud.hasNote(i, d)) continue;
+      int nx = x + ((d - 1) % 3) * sub + sub / 2;
+      int ny = y + ((d - 1) / 3) * sub + sub / 2;
+      sprStr(cs, g_csFont, String((char)('0' + d)), nx, ny, NOTEFONT);
+    }
+  }
+  cs.setTextDatum(TL_DATUM);
+}
+static void pushCellRect(int i) {
+  if (!g_cs) return;
+  int r = i / 9, c = i % 9;
+  int x = GX + c * GCELL - 2, ySpr = SY(GY) + r * GCELL - 2;
+  int w = GCELL + 4, h = GCELL + 4;
+  if (x < GX)                      { w -= (GX - x);              x = GX; }
+  if (ySpr < SY(GY))               { h -= (SY(GY) - ySpr);       ySpr = SY(GY); }
+  if (x + w > GX + GRIDSZ)         w = GX + GRIDSZ - x;
+  if (ySpr + h > SY(GY) + GRIDSZ)  h = SY(GY) + GRIDSZ - ySpr;
+  g_cs->pushSprite(x, ySpr + HDRH, x, ySpr, w, h);
+}
+
+static void drawNumKeyFull(TFT_eSprite &cs, int d) {
+  int nw = numKeyW(), ny = SY(NUMY);
+  int bx = numKeyX(d);
+  bool done = g_sud.digitExhausted((uint8_t)d);
+  cs.fillRoundRect(bx + 1, ny, nw - 2, NUMH, 5, COL_ACCENT);
+  cs.drawRoundRect(bx + 1, ny, nw - 2, NUMH, 5, theme.neon(d, COL_DIM));
+  cs.setTextColor(done ? COL_DIM : COL_FG, COL_ACCENT);
+  cs.setTextDatum(MC_DATUM);
+  sprStr(cs, g_csFont, String((char)('0' + d)), bx + nw / 2, ny + NUMH / 2 + 1, NUMFONT);
+  int rem = 9 - g_sud.countOf((uint8_t)d);
+  if (rem > 0) {
+    cs.setTextColor(COL_DIM, COL_ACCENT);
+    cs.setTextDatum(TL_DATUM);
+    sprStr(cs, g_csFont, String(rem), bx + 4, ny + 2, 1);
+  }
+  cs.setTextDatum(TL_DATUM);
+}
+static void pushNumKeyRect(int d) {
+  if (!g_cs) return;
+  int nw = numKeyW(), x = numKeyX(d), ySpr = SY(NUMY);
+  g_cs->pushSprite(x, NUMY, x, ySpr, nw, NUMH);
+}
+
+static void drawActKeyFull(TFT_eSprite &cs, int i) {
+  int aw = actKeyW(), ay = SY(ACTY);
+  int bx = actKeyX(i);
+  bool on = (i == 2 && g_notesMode);
+  uint16_t bg = on ? theme.sel() : COL_ACCENT;
+  cs.fillRoundRect(bx + 2, ay, aw - 4, ACTH, 6, bg);
+  cs.drawRoundRect(bx + 2, ay, aw - 4, ACTH, 6, theme.neon(i, COL_DIM));
+  bool dim = (i == 0 && !g_sud.canUndo());
+  cs.setTextColor(dim ? COL_DIM : COL_FG, bg);
+  cs.setTextDatum(MC_DATUM);
+  sprStr(cs, g_csFont, ACT_LABEL[i], bx + aw / 2, ay + ACTH / 2, 2);
+  cs.setTextDatum(TL_DATUM);
+}
+static void pushActKeyRect(int i) {
+  if (!g_cs) return;
+  int aw = actKeyW(), x = actKeyX(i), ySpr = SY(ACTY);
+  g_cs->pushSprite(x, ACTY, x, ySpr, aw, ACTH);
+}
+
+static const int INFO_STATUS_W = 140;   // right-aligned mistake/filled readout
+static void drawInfoStatusFull(TFT_eSprite &cs) {
+  BoardPal bp = theme.board();
+  int iy = SY(HDRH), rx = SCRW - INFO_STATUS_W;
+  cs.fillRect(rx, iy, INFO_STATUS_W, IH, COL_BG);
+  cs.setTextDatum(MR_DATUM);
+  String rstat;
+  if (g_hlMistakes && g_mistakeLim) rstat = String("X ") + g_mistakes + "/" + g_mistakeLim;
+  else if (g_hlMistakes && g_mistakes) rstat = String("X ") + g_mistakes;
+  else rstat = String(g_sud.filledCount()) + "/81";
+  cs.setTextColor(g_hlMistakes && g_mistakeLim && g_mistakes >= g_mistakeLim ? bp.badText : COL_DIM, COL_BG);
+  sprStr(cs, g_csFont, rstat, SCRW - 10, iy + IH / 2, 2);
+  cs.setTextDatum(TL_DATUM);
+}
+static void pushInfoStatusRect() {
+  if (!g_cs) return;
+  int rx = SCRW - INFO_STATUS_W, ySpr = SY(HDRH);
+  g_cs->pushSprite(rx, HDRH, rx, ySpr, INFO_STATUS_W, IH);
+}
+
+static const int INFO_TIMER_W = 110;    // centred clock readout
+static void drawInfoTimerFull(TFT_eSprite &cs) {
+  int iy = SY(HDRH), tx = SCRW / 2 - INFO_TIMER_W / 2;
+  cs.fillRect(tx, iy, INFO_TIMER_W, IH, COL_BG);
+  cs.setTextDatum(MC_DATUM);
+  cs.setTextColor(COL_FG, COL_BG);
+  sprStr(cs, g_csFont, fmtTime(elapsedSec()), SCRW / 2, iy + IH / 2, 2);
+  cs.setTextDatum(TL_DATUM);
+}
+static void pushInfoTimerRect() {
+  if (!g_cs) return;
+  int tx = SCRW / 2 - INFO_TIMER_W / 2, ySpr = SY(HDRH);
+  g_cs->pushSprite(tx, HDRH, tx, ySpr, INFO_TIMER_W, IH);
+}
+
+// Selection changes can shade more than just the old/new cell (peers, same-
+// digit highlighting), so redraw the full affected set, not just the pair.
+static void redrawSelectionHighlights(int oldSel, int newSel) {
+  bool touched[81] = { false };
+  auto mark = [&](int s) {
+    if (s < 0) return;
+    touched[s] = true;
+    if (!g_hlPeers && !g_hlSame) return;
+    uint8_t sv = g_sud.value(s);
+    for (int j = 0; j < 81; j++) {
+      if (g_hlPeers && isPeer(j, s)) touched[j] = true;
+      if (g_hlSame && sv != 0 && g_sud.value(j) == sv) touched[j] = true;
+    }
+  };
+  mark(oldSel);
+  mark(newSel);
+  for (int i = 0; i < 81; i++) {
+    if (!touched[i]) continue;
+    drawCellFull(*g_cs, i);
+    pushCellRect(i);
+  }
+}
+
+// Momentary "key pressed" feedback. Drawn into the sprite and blitted like
+// any other partial update, then restored by serviceFlash() once FLASH_MS has
+// elapsed — a timestamp check each loop pass, not a blocking delay(), so
+// touch polling never stalls.
 static const uint16_t KEY_FLASH = 0xBDF7;   // light gray (same as the shell keyboard)
-static void flashKey(int bx, int by, int bw, int bh, int radius,
-                     const String &label, uint8_t font, bool dim) {
-  tft->fillRoundRect(bx, by, bw, bh, radius, KEY_FLASH);
-  tft->drawRoundRect(bx, by, bw, bh, radius, theme.neon(0, COL_DIM));
-  tft->setTextColor(dim ? COL_DIM : contrastOn(KEY_FLASH), KEY_FLASH);
-  tft->setTextDatum(MC_DATUM);
-  drawStr(label, bx + bw / 2, by + bh / 2 + 1, font);
-  tft->setTextDatum(TL_DATUM);
-  delay(70);
+static const uint32_t FLASH_MS  = 70;
+static int      g_flashNum   = -1;   // 1..9, or -1
+static int      g_flashAct   = -1;   // 0..3, or -1
+static uint32_t g_flashUntil = 0;
+
+static void drawNumKeyFlash(int d) {
+  if (!g_cs) return;
+  int nw = numKeyW(), ny = SY(NUMY), bx = numKeyX(d);
+  bool dim = g_sud.digitExhausted((uint8_t)d);
+  g_cs->fillRoundRect(bx + 1, ny, nw - 2, NUMH, 5, KEY_FLASH);
+  g_cs->drawRoundRect(bx + 1, ny, nw - 2, NUMH, 5, theme.neon(0, COL_DIM));
+  g_cs->setTextColor(dim ? COL_DIM : contrastOn(KEY_FLASH), KEY_FLASH);
+  g_cs->setTextDatum(MC_DATUM);
+  sprStr(*g_cs, g_csFont, String((char)('0' + d)), bx + nw / 2, ny + NUMH / 2 + 1, NUMFONT);
+  g_cs->setTextDatum(TL_DATUM);
+  pushNumKeyRect(d);
+  g_flashNum = d; g_flashUntil = millis() + FLASH_MS;
 }
-static void flashNumKey(int d) {
-  int nw = numKeyW();
-  flashKey(numKeyX(d) + 1, NUMY, nw - 2, NUMH, 5,
-           String((char)('0' + d)), NUMFONT, g_sud.digitExhausted((uint8_t)d));
+static void drawActKeyFlash(int i) {
+  if (!g_cs) return;
+  int aw = actKeyW(), ay = SY(ACTY), bx = actKeyX(i);
+  bool dim = (i == 0 && !g_sud.canUndo());
+  g_cs->fillRoundRect(bx + 2, ay, aw - 4, ACTH, 6, KEY_FLASH);
+  g_cs->drawRoundRect(bx + 2, ay, aw - 4, ACTH, 6, theme.neon(0, COL_DIM));
+  g_cs->setTextColor(dim ? COL_DIM : contrastOn(KEY_FLASH), KEY_FLASH);
+  g_cs->setTextDatum(MC_DATUM);
+  sprStr(*g_cs, g_csFont, ACT_LABEL[i], bx + aw / 2, ay + ACTH / 2 + 1, 2);
+  g_cs->setTextDatum(TL_DATUM);
+  pushActKeyRect(i);
+  g_flashAct = i; g_flashUntil = millis() + FLASH_MS;
 }
-static void flashActKey(int i) {
-  int aw = actKeyW();
-  flashKey(actKeyX(i) + 2, ACTY, aw - 4, ACTH, 6,
-           ACT_LABEL[i], 2, (i == 0 && !g_sud.canUndo()));
+static void serviceFlash() {
+  if (g_flashNum < 0 && g_flashAct < 0) return;
+  if (millis() < g_flashUntil) return;
+  if (g_flashNum >= 0) { drawNumKeyFull(*g_cs, g_flashNum); pushNumKeyRect(g_flashNum); g_flashNum = -1; }
+  if (g_flashAct >= 0) { drawActKeyFull(*g_cs, g_flashAct); pushActKeyRect(g_flashAct); g_flashAct = -1; }
 }
 
 // Screen point -> cell index, or -1.
@@ -1343,17 +1535,20 @@ static void gameScreen() {
   drawHeader("Sudoku", true);
   g_startMs = millis();
   g_running = true;
-  gRender();
+  gRender();   // one full composite + full push; every update after this is partial
 
   bool wasDown = false;
   uint16_t pX = 0, pY = 0;
   bool moved = false;
   uint32_t lastTick = millis();
+  g_flashNum = -1; g_flashAct = -1;
 
   for (;;) {
     touch->run();
     bool down = touch->isPressed();
     uint16_t x = touch->x(), y = touch->y();
+
+    serviceFlash();   // non-blocking: restores a pressed key once its flash window elapses
 
     if (down && !wasDown) { pX = x; pY = y; moved = false; }
     else if (down && wasDown) { if (abs((int)x - pX) > 8 || abs((int)y - pY) > 8) moved = true; }
@@ -1365,27 +1560,79 @@ static void gameScreen() {
         gSpriteEnd();
         return;
       }
-      bool changed = false, flashed = false;
+      bool changed = false;
       int cell = cellAt(pX, pY);
       int num  = numAt(pX, pY);
       int act  = actAt(pX, pY);
-      if (cell >= 0) { if (g_sel != cell) { g_sel = cell; changed = true; } }
-      else if (num >= 1) { flashNumKey(num); flashed = true; changed = enterDigit((uint8_t)num); }
-      else if (act >= 0) {
-        flashActKey(act); flashed = true;
+
+      if (cell >= 0) {
+        if (g_sel != cell) { int old = g_sel; g_sel = cell; redrawSelectionHighlights(old, cell); }
+      } else if (num >= 1) {
+        drawNumKeyFlash(num);
+        uint8_t prevVal = (g_sel >= 0) ? g_sud.value(g_sel) : 0;
+        changed = enterDigit((uint8_t)num);
+        if (changed) {
+          drawCellFull(*g_cs, g_sel); pushCellRect(g_sel);
+          drawInfoStatusFull(*g_cs); pushInfoStatusRect();
+          if (prevVal && prevVal != num) { drawNumKeyFull(*g_cs, prevVal); pushNumKeyRect(prevVal); }
+        }
+      } else if (act >= 0) {
+        drawActKeyFlash(act);
         switch (act) {
-          case 0: changed = g_sud.undo(); break;
-          case 1: if (g_sel >= 0) { g_hintCell[g_sel] = false; changed = g_sud.clearCell(g_sel); } break;
-          case 2: g_notesMode = !g_notesMode; changed = true; break;
-          case 3: if (g_sel >= 0 && !g_sud.isGiven(g_sel) && g_sud.value(g_sel) != g_sud.solution(g_sel)) {
-                    g_hintCell[g_sel] = true; g_hintsUsed++;
-                    changed = g_sud.applyHint(g_sel);
-                  } break;
+          case 0: {   // Undo — the undo ring is single-cell snapshots, so diff
+                      // the grid before/after to find exactly which cell moved.
+            uint8_t beforeVal[81]; uint16_t beforeNotes[81];
+            for (int k = 0; k < 81; k++) { beforeVal[k] = g_sud.value(k); beforeNotes[k] = g_sud.notes(k); }
+            changed = g_sud.undo();
+            if (changed) {
+              int ci = -1;
+              for (int k = 0; k < 81; k++)
+                if (beforeVal[k] != g_sud.value(k) || beforeNotes[k] != g_sud.notes(k)) { ci = k; break; }
+              if (ci >= 0) {
+                uint8_t oldV = beforeVal[ci], newV = g_sud.value(ci);
+                drawCellFull(*g_cs, ci); pushCellRect(ci);
+                if (oldV)                 { drawNumKeyFull(*g_cs, oldV); pushNumKeyRect(oldV); }
+                if (newV && newV != oldV) { drawNumKeyFull(*g_cs, newV); pushNumKeyRect(newV); }
+                drawInfoStatusFull(*g_cs); pushInfoStatusRect();
+              }
+            }
+            break;
+          }
+          case 1:   // Erase
+            if (g_sel >= 0) {
+              uint8_t prevVal = g_sud.value(g_sel);
+              g_hintCell[g_sel] = false;
+              changed = g_sud.clearCell(g_sel);
+              if (changed) {
+                drawCellFull(*g_cs, g_sel); pushCellRect(g_sel);
+                drawInfoStatusFull(*g_cs); pushInfoStatusRect();
+                if (prevVal) { drawNumKeyFull(*g_cs, prevVal); pushNumKeyRect(prevVal); }
+              }
+            }
+            break;
+          case 2:   // Notes toggle — no cells change; serviceFlash() repaints
+                    // this key itself (pressed/unpressed) once the flash ends.
+            g_notesMode = !g_notesMode;
+            changed = true;
+            break;
+          case 3:   // Hint
+            if (g_sel >= 0 && !g_sud.isGiven(g_sel) && g_sud.value(g_sel) != g_sud.solution(g_sel)) {
+              uint8_t prevVal = g_sud.value(g_sel);
+              g_hintCell[g_sel] = true; g_hintsUsed++;
+              changed = g_sud.applyHint(g_sel);
+              if (changed) {
+                uint8_t newVal = g_sud.value(g_sel);
+                drawCellFull(*g_cs, g_sel); pushCellRect(g_sel);
+                drawInfoStatusFull(*g_cs); pushInfoStatusRect();
+                if (prevVal)                      { drawNumKeyFull(*g_cs, prevVal); pushNumKeyRect(prevVal); }
+                if (newVal && newVal != prevVal)  { drawNumKeyFull(*g_cs, newVal); pushNumKeyRect(newVal); }
+              }
+            }
+            break;
         }
       }
-      if (!changed && flashed) gRender();   // no state change: repaint to clear the flash
+
       if (changed) {
-        gRender();
         // ── win? ──
         if (g_sud.isSolved()) {
           g_elapsedMs += (millis() - g_startMs); g_running = false;
@@ -1425,10 +1672,11 @@ static void gameScreen() {
     }
     wasDown = down;
 
-    // ── 1 Hz timer refresh ──
+    // ── 1 Hz timer refresh — just the clock digits, not the whole board ──
     if (g_showTimer && millis() - lastTick >= 1000) {
       lastTick = millis();
-      gRender();
+      drawInfoTimerFull(*g_cs);
+      pushInfoTimerRect();
     }
     delay(10);
   }
