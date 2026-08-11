@@ -1442,6 +1442,22 @@ static void redrawSelectionHighlights(int oldSel, int newSel) {
   }
 }
 
+// If the cell that just changed value is the anchor cell for "same digit"
+// highlighting (i.e. it's selected), other cells sharing its old or new digit
+// need to lose/gain that highlight now. (Row/col/box peer highlighting is
+// purely positional and doesn't depend on any value, so it never needs this —
+// only the value-based "same digit" highlight does.)
+static void redrawSameDigitHighlights(int changedCell, uint8_t oldVal, uint8_t newVal) {
+  if (!g_hlSame || changedCell != g_sel || oldVal == newVal) return;
+  for (int j = 0; j < 81; j++) {
+    if (j == changedCell) continue;
+    uint8_t vj = g_sud.value(j);
+    if ((oldVal && vj == oldVal) || (newVal && vj == newVal)) {
+      drawCellFull(*g_cs, j); pushCellRect(j);
+    }
+  }
+}
+
 // Momentary "key pressed" feedback. Drawn into the sprite and blitted like
 // any other partial update, then restored by serviceFlash() once FLASH_MS has
 // elapsed — a timestamp check each loop pass, not a blocking delay(), so
@@ -1573,6 +1589,7 @@ static void gameScreen() {
         changed = enterDigit((uint8_t)num);
         if (changed) {
           drawCellFull(*g_cs, g_sel); pushCellRect(g_sel);
+          redrawSameDigitHighlights(g_sel, prevVal, g_sud.value(g_sel));
           drawInfoStatusFull(*g_cs); pushInfoStatusRect();
           if (prevVal && prevVal != num) { drawNumKeyFull(*g_cs, prevVal); pushNumKeyRect(prevVal); }
         }
@@ -1591,6 +1608,7 @@ static void gameScreen() {
               if (ci >= 0) {
                 uint8_t oldV = beforeVal[ci], newV = g_sud.value(ci);
                 drawCellFull(*g_cs, ci); pushCellRect(ci);
+                redrawSameDigitHighlights(ci, oldV, newV);
                 if (oldV)                 { drawNumKeyFull(*g_cs, oldV); pushNumKeyRect(oldV); }
                 if (newV && newV != oldV) { drawNumKeyFull(*g_cs, newV); pushNumKeyRect(newV); }
                 drawInfoStatusFull(*g_cs); pushInfoStatusRect();
@@ -1605,6 +1623,7 @@ static void gameScreen() {
               changed = g_sud.clearCell(g_sel);
               if (changed) {
                 drawCellFull(*g_cs, g_sel); pushCellRect(g_sel);
+                redrawSameDigitHighlights(g_sel, prevVal, 0);
                 drawInfoStatusFull(*g_cs); pushInfoStatusRect();
                 if (prevVal) { drawNumKeyFull(*g_cs, prevVal); pushNumKeyRect(prevVal); }
               }
@@ -1623,6 +1642,7 @@ static void gameScreen() {
               if (changed) {
                 uint8_t newVal = g_sud.value(g_sel);
                 drawCellFull(*g_cs, g_sel); pushCellRect(g_sel);
+                redrawSameDigitHighlights(g_sel, prevVal, newVal);
                 drawInfoStatusFull(*g_cs); pushInfoStatusRect();
                 if (prevVal)                      { drawNumKeyFull(*g_cs, prevVal); pushNumKeyRect(prevVal); }
                 if (newVal && newVal != prevVal)  { drawNumKeyFull(*g_cs, newVal); pushNumKeyRect(newVal); }
