@@ -86,7 +86,7 @@ struct Theme {
   uint8_t theme_idx  = PW_THEME_CLASSIC;
   uint8_t bright     = 15;                     // screen backlight, 0..19
   uint8_t led_bright = 4;                      // RGB status LED, 0..20 (0 = off)
-  uint8_t board_pal  = 0;                      // 0 = Classic, 1 = Match Theme
+  uint8_t board_pal  = 0;                      // Grid Look: 0..BOARD_PAL_FIXED-1, last = Match Theme
   uint8_t acc_by_theme[PW_THEME_COUNT];        // 0 = Default (themeHighlight), else accent+1
   uint8_t fc_by_theme[PW_THEME_COUNT];         // 0 = Default (theme fg), else PW_FONTCOL_VAL idx
 
