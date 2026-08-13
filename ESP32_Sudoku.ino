@@ -77,6 +77,7 @@ static const int ITEMH    = 34;
 static const int CONTENTY = HDRH;
 
 static bool g_sdOk = false;            // SD mounted (auto-save target; else SPIFFS)
+bool g_persistSD = false;              // persist.h backend flag (mirrors g_sdOk)
 
 // ── Sudoku game state ───────────────────────────────────────────────────────
 static Sudoku  g_sud;
@@ -580,7 +581,7 @@ static void msgScreen(const char *title, const String &a, const String &b, uint1
 
 // ── Config + stats persistence ──────────────────────────────────────────────
 static void cfgLoad() {
-  File f = SPIFFS.open("/sudoku_cfg.json", FILE_READ);
+  File f = persistRead("sudoku_cfg.json");
   if (!f) return;
   JsonDocument d;
   DeserializationError e = deserializeJson(d, f);
@@ -602,13 +603,13 @@ static void cfgSave() {
   d["timer"]    = g_showTimer;
   d["mistakes"] = g_hlMistakes;
   d["mlimit"]   = g_mistakeLim;
-  File w = SPIFFS.open("/sudoku_cfg.json", FILE_WRITE);
+  File w = persistWrite("sudoku_cfg.json");
   if (!w) return;
   serializeJson(d, w);
   w.close();
 }
 static void statsLoad() {
-  File f = SPIFFS.open("/sudoku_stats.json", FILE_READ);
+  File f = persistRead("sudoku_stats.json");
   if (!f) return;
   JsonDocument d;
   DeserializationError e = deserializeJson(d, f);
@@ -626,7 +627,7 @@ static void statsSave() {
   JsonArray w = d["w"].to<JsonArray>();
   JsonArray b = d["b"].to<JsonArray>();
   for (int i = 0; i < 4; i++) { p.add(g_played[i]); w.add(g_won[i]); b.add(g_best[i]); }
-  File wf = SPIFFS.open("/sudoku_stats.json", FILE_WRITE);
+  File wf = persistWrite("sudoku_stats.json");
   if (!wf) return;
   serializeJson(d, wf);
   wf.close();
@@ -1832,6 +1833,7 @@ void setup() {
 #else
   g_sdOk = SD.begin(SD_CS);
 #endif
+  g_persistSD = g_sdOk;                // settings + stats follow the same card
   Serial.println(g_sdOk ? F("[" BOARD_NAME "] SD OK") : F("[" BOARD_NAME "] SD absent (SPIFFS saves)"));
 
   if (!SPIFFS.begin(true)) Serial.println(F("[" BOARD_NAME "] SPIFFS mount failed"));
